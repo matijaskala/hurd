@@ -1,0 +1,5 @@
+--- /dev/null
++++ sysdeps/mach/hurd/clock_settime.c
+@@ -0,0 +1,2 @@
++#define CPUCLOCK_WHICH(clock) ((clock) & (clockid_t)3)
++#include <sysdeps/unix/clock_settime.c>

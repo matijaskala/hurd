@@ -1,0 +1,12 @@
+diff -ru hurd-0.9/Makeconf hurd-0.9.new/Makeconf
+--- hurd-0.9/Makeconf	2016-12-18 19:38:57.000000000 +0100
++++ hurd-0.9.new/Makeconf	2017-01-02 02:57:30.984336262 +0100
+@@ -340,7 +340,7 @@
+ 	$(link-executable) \
+               $(filter %.o,$^) \
+ 	      '-Wl,-(' $(foreach lib,$(filter-out %.o,$^),${_libsubst}) \
+-		       $($*-LDLIBS) $(LDLIBS) \
++		       $($*-LDLIBS) $(LDLIBS) -lmachuser -lhurduser \
+ 	      '-Wl,-)'
+ 
+ $(addsuffix .static,$(progtarg)): %$(target-suffix).static: $(BUGADDR)

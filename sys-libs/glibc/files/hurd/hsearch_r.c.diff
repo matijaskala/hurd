@@ -1,0 +1,10 @@
+--- a/misc/hsearch_r.c
++++ b/misc/hsearch_r.c
+@@ -19,6 +19,7 @@
+ #include <errno.h>
+ #include <malloc.h>
+ #include <string.h>
++#include <limits.h>
+ #include <stdint.h>
+ #include <search.h>
+ 

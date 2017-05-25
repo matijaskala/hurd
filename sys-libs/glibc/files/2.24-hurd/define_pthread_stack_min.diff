@@ -1,0 +1,9 @@
+--- glibc-2.22/sysdeps/mach/hurd/bits/local_lim.h	2016-12-30 21:04:33.980987221 +0100
++++ glibc-2.22/sysdeps/mach/hurd/bits/local_lim.h	2016-12-30 21:05:33.322986010 +0100
+@@ -32,3 +32,6 @@
+    suitable, and `sysconf' will return a number at least as large.  */
+ 
+ #define NGROUPS_MAX	256
++
++#define PATH_MAX 1024
++#define PTHREAD_STACK_MIN 16384

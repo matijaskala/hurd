@@ -1,0 +1,1404 @@
+t/gsync-libc
+From: Agustina Arzille <avarzille@riseup.net>
+Subject: [PATCH] Introduce gsync-based locks to glibc.
+
+* hurd/Makefile: Add hurdlock.
+* hurd/Versions: Added new entry to export the above interface.
+* hurd/hurdlock.c: New file.
+* hurd/hurdlock.h: New file.
+* hurd/hurdpid.c: Include <lowlevellock.h>
+  (_S_msg_proc_newids): Use lll_wait to synchronize.
+* hurd/hurdsig.c: (reauth_proc): Use __mutex_lock and __mutex_unlock.
+* hurd/setauth.c: Include <hurdlock.h>, use integer for synchronization.
+* hurd/sysvshm.c: Include <hurdlock.h>, use integer for synchronization.
+* mach/Makefile: Remove unneeded file
+* mach/lock-intern.h: Use lll to implement spinlocks.
+* mach/lowlevellock.h: New file
+* mach/mutex-init.c: Rewrite mutex initialization.
+* sysdeps/mach/Makefile: Add libmachuser as dependencies for some libs.
+* sysdeps/mach/libc-lock.h: Reimplemented libc internal locks
+  with lll, cleanup routines now use gcc's cleanup attribute
+* sysdeps/mach/hurd/bits/errno.h: New errno values.
+* sysdeps/mach/hurd/libc-lock.h: Removed file.
+* sysdeps/mach/hurd/malloc-machine.h: Reimplemented malloc locks.
+* sysdeps/mach/hurd/setpgid.c: (setpgid): Use gsync for synchronization.
+* sysdeps/mach/hurd/setsid.c: (setsid): Likewise.
+
+t/libc_cleanup
+From: Agustina Arzille <avarzille@riseup.net>
+Subject: [PATCH] Use gcc's cleanup attributes
+
+cleanup routines now use gcc's cleanup attribute
+
+---
+ hurd/Makefile                      |   1 +
+ hurd/Versions                      |   9 ++
+ hurd/hurdlock.c                    | 247 +++++++++++++++++++++++++++++++++++++
+ hurd/hurdlock.h                    | 117 ++++++++++++++++++
+ hurd/hurdpid.c                     |   3 +
+ hurd/hurdsig.c                     |   4 +-
+ hurd/setauth.c                     |   5 +-
+ hurd/sysvshm.c                     |   3 +-
+ mach/Makefile                      |   2 +-
+ mach/lock-intern.h                 |  84 ++++++++-----
+ mach/lowlevellock.h                |  80 ++++++++++++
+ mach/mutex-init.c                  |   7 +-
+ sysdeps/mach/Makefile              |  18 +++
+ sysdeps/mach/libc-lock.h           | 170 +++++++++++++++++++------
+ sysdeps/mach/hurd/bits/errno.h     |   8 +-
+ sysdeps/mach/hurd/libc-lock.h      | 215 --------------------------------
+ sysdeps/mach/hurd/malloc-machine.h |  11 +-
+ sysdeps/mach/hurd/setpgid.c        |  10 +-
+ sysdeps/mach/hurd/setsid.c         |  10 +-
+ 19 files changed, 681 insertions(+), 323 deletions(-)
+
+Index: glibc-2.23/hurd/Makefile
+===================================================================
+--- glibc-2.23.orig/hurd/Makefile
++++ glibc-2.23/hurd/Makefile
+@@ -56,6 +56,7 @@ routines = hurdstartup hurdinit \
+ 	   ports-get ports-set hurdports hurdmsg \
+ 	   errno-loc \
+ 	   sysvshm \
++	   hurdlock \
+ 	   $(sig) $(dtable) $(inlines) port-cleanup report-wait xattr
+ sig	= hurdsig hurdfault siginfo hurd-raise preempt-sig \
+ 	  trampoline longjmp-ts catch-exc exc2signal hurdkill sigunwind \
+Index: glibc-2.23/hurd/Versions
+===================================================================
+--- glibc-2.23.orig/hurd/Versions
++++ glibc-2.23/hurd/Versions
+@@ -161,4 +161,13 @@ libc {
+     cthread_keycreate; cthread_getspecific; cthread_setspecific;
+     __libc_getspecific;
+   }
++
++  GLIBC_PRIVATE {
++    # Used by other libs.
++    lll_xwait; lll_timed_wait; lll_timed_xwait;
++    __lll_abstimed_wait; __lll_abstimed_xwait;
++    __lll_abstimed_lock; lll_robust_lock;
++    __lll_robust_abstimed_lock; lll_robust_trylock;
++    lll_set_wake; lll_robust_unlock; lll_requeue;
++  }
+ }
+Index: glibc-2.23/hurd/hurdlock.c
+===================================================================
+--- /dev/null
++++ glibc-2.23/hurd/hurdlock.c
+@@ -0,0 +1,247 @@
++/* Copyright (C) 1999-2016 Free Software Foundation, Inc.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <http://www.gnu.org/licenses/>.  */
++
++#include "hurdlock.h"
++#include <hurd.h>
++#include <time.h>
++#include <errno.h>
++
++int lll_xwait (void *ptr, int lo, int hi, int flags)
++{
++  return (__gsync_wait (__mach_task_self (),
++    (vm_offset_t)ptr, lo, hi, 0, flags | GSYNC_QUAD));
++}
++
++int lll_timed_wait (void *ptr, int val, int mlsec, int flags)
++{
++  return (__gsync_wait (__mach_task_self (),
++    (vm_offset_t)ptr, val, 0, mlsec, flags | GSYNC_TIMED));
++}
++
++int lll_timed_xwait (void *ptr, int lo,
++  int hi, int mlsec, int flags)
++{
++  return (__gsync_wait (__mach_task_self (), (vm_offset_t)ptr,
++    lo, hi, mlsec, flags | GSYNC_TIMED | GSYNC_QUAD));
++}
++
++/* Convert an absolute timeout in nanoseconds to a relative
++ * timeout in milliseconds. */
++static inline int __attribute__ ((gnu_inline))
++compute_reltime (const struct timespec *abstime, clockid_t clk)
++{
++  struct timespec ts;
++  __clock_gettime (clk, &ts);
++
++  ts.tv_sec = abstime->tv_sec - ts.tv_sec;
++  ts.tv_nsec = abstime->tv_nsec - ts.tv_nsec;
++
++  if (ts.tv_nsec < 0)
++    {
++      --ts.tv_sec;
++      ts.tv_nsec += 1000000000;
++    }
++
++  return (ts.tv_sec < 0 ? -1 :
++    (int)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000));
++}
++
++int __lll_abstimed_wait (void *ptr, int val,
++  const struct timespec *tsp, int flags, int clk)
++{
++  int mlsec = compute_reltime (tsp, clk);
++  return (mlsec < 0 ? KERN_TIMEDOUT :
++    lll_timed_wait (ptr, val, mlsec, flags));
++}
++
++int __lll_abstimed_xwait (void *ptr, int lo, int hi,
++  const struct timespec *tsp, int flags, int clk)
++{
++  int mlsec = compute_reltime (tsp, clk);
++  return (mlsec < 0 ? KERN_TIMEDOUT :
++    lll_timed_xwait (ptr, lo, hi, mlsec, flags));
++}
++
++int __lll_abstimed_lock (void *ptr,
++  const struct timespec *tsp, int flags, int clk)
++{
++  if (lll_trylock (ptr) == 0)
++    return (0);
++
++  while (1)
++    {
++      if (atomic_exchange_acq ((int *)ptr, 2) == 0)
++        return (0);
++      else if (tsp->tv_nsec < 0 || tsp->tv_nsec >= 1000000000)
++        return (EINVAL);
++
++      int mlsec = compute_reltime (tsp, clk);
++      if (mlsec < 0 || lll_timed_wait (ptr,
++          2, mlsec, flags) == KERN_TIMEDOUT)
++        return (ETIMEDOUT);
++    }
++}
++
++void lll_set_wake (void *ptr, int val, int flags)
++{
++  __gsync_wake (__mach_task_self (),
++    (vm_offset_t)ptr, val, flags | GSYNC_MUTATE);
++}
++
++void lll_requeue (void *src, void *dst, int wake_one, int flags)
++{
++  __gsync_requeue (__mach_task_self (), (vm_offset_t)src,
++    (vm_offset_t)dst, (boolean_t)wake_one, flags);
++}
++
++/* Robust locks. */
++
++extern int __getpid (void) __attribute__ ((const));
++extern task_t __pid2task (int);
++
++/* Test if a given process id is still valid. */
++static inline int valid_pid (int pid)
++{
++  task_t task = __pid2task (pid);
++  if (task == MACH_PORT_NULL)
++    return (0);
++
++  __mach_port_deallocate (__mach_task_self (), task);
++  return (1);
++}
++
++/* Robust locks have currently no support from the kernel; they
++ * are simply implemented with periodic polling. When sleeping, the
++ * maximum blocking time is determined by this constant. */
++#define MAX_WAIT_TIME   1500
++
++int lll_robust_lock (void *ptr, int flags)
++{
++  int *iptr = (int *)ptr;
++  int id = __getpid ();
++  int wait_time = 25;
++  unsigned int val;
++
++  /* Try to set the lock word to our PID if it's clear. Otherwise,
++   * mark it as having waiters. */
++  while (1)
++    {
++      val = *iptr;
++      if (!val && atomic_compare_and_exchange_bool_acq (iptr, id, 0) == 0)
++        return (0);
++      else if (atomic_compare_and_exchange_bool_acq (iptr,
++          val | LLL_WAITERS, val) == 0)
++        break;
++    }
++
++  for (id |= LLL_WAITERS ; ; )
++    {
++      val = *iptr;
++      if (!val && atomic_compare_and_exchange_bool_acq (iptr, id, 0) == 0)
++        return (0);
++      else if (val && !valid_pid (val & LLL_OWNER_MASK))
++        {
++          if (atomic_compare_and_exchange_bool_acq (iptr, id, val) == 0)
++            return (EOWNERDEAD);
++        }
++      else
++        {
++          lll_timed_wait (iptr, val, wait_time, flags);
++          if (wait_time < MAX_WAIT_TIME)
++            wait_time <<= 1;
++        }
++    }
++}
++
++int __lll_robust_abstimed_lock (void *ptr,
++  const struct timespec *tsp, int flags, int clk)
++{
++  int *iptr = (int *)ptr;
++  int id = __getpid ();
++  int wait_time = 25;
++  unsigned int val;
++
++  while (1)
++    {
++      val = *iptr;
++      if (!val && atomic_compare_and_exchange_bool_acq (iptr, id, 0) == 0)
++        return (0);
++      else if (atomic_compare_and_exchange_bool_acq (iptr,
++          val | LLL_WAITERS, val) == 0)
++        break;
++    }
++
++  for (id |= LLL_WAITERS ; ; )
++    {
++      val = *iptr;
++      if (!val && atomic_compare_and_exchange_bool_acq (iptr, id, 0) == 0)
++        return (0);
++      else if (val && !valid_pid (val & LLL_OWNER_MASK))
++        {
++          if (atomic_compare_and_exchange_bool_acq (iptr, id, val) == 0)
++            return (EOWNERDEAD);
++        }
++      else
++        {
++          int mlsec = compute_reltime (tsp, clk);
++          if (mlsec < 0)
++            return (ETIMEDOUT);
++          else if (mlsec > wait_time)
++            mlsec = wait_time;
++
++          int res = lll_timed_wait (iptr, val, mlsec, flags);
++          if (res == KERN_TIMEDOUT)
++            return (ETIMEDOUT);
++          else if (wait_time < MAX_WAIT_TIME)
++            wait_time <<= 1;
++        }
++    }
++}
++
++int lll_robust_trylock (void *ptr)
++{
++  int *iptr = (int *)ptr;
++  int id = __getpid ();
++  unsigned int val = *iptr;
++
++  if (!val)
++    {
++      if (atomic_compare_and_exchange_bool_acq (iptr, id, 0) == 0)
++        return (0);
++    }
++  else if (!valid_pid (val & LLL_OWNER_MASK) &&
++      atomic_compare_and_exchange_bool_acq (iptr, id, val) == 0)
++    return (EOWNERDEAD);
++
++  return (EBUSY);
++}
++
++void lll_robust_unlock (void *ptr, int flags)
++{
++  unsigned int val = atomic_load_relaxed((unsigned int *)ptr);
++  while (1)
++    {
++      if (val & LLL_WAITERS)
++        {
++          lll_set_wake (ptr, 0, flags);
++          break;
++        }
++      else if (atomic_compare_exchange_weak_release ((unsigned int *)ptr, &val, 0))
++        break;
++    }
++}
++
+Index: glibc-2.23/hurd/hurdlock.h
+===================================================================
+--- /dev/null
++++ glibc-2.23/hurd/hurdlock.h
+@@ -0,0 +1,117 @@
++/* Copyright (C) 1999-2016 Free Software Foundation, Inc.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <http://www.gnu.org/licenses/>.  */
++
++#ifndef _HURD_LOCK_H
++#define _HURD_LOCK_H   1
++
++#include <mach/lowlevellock.h>
++
++struct timespec;
++
++/* Flags for robust locks. */
++#define LLL_WAITERS      (1U << 31)
++#define LLL_DEAD_OWNER   (1U << 30)
++
++#define LLL_OWNER_MASK   ~(LLL_WAITERS | LLL_DEAD_OWNER)
++
++/* Wait on 64-bit address PTR, without blocking if its contents
++ * are different from the pair <LO, HI>. */
++extern int lll_xwait (void *__ptr, int __lo,
++  int __hi, int __flags);
++
++/* Same as 'lll_wait', but only block for MLSEC milliseconds. */
++extern int lll_timed_wait (void *__ptr, int __val,
++  int __mlsec, int __flags);
++
++/* Same as 'lll_xwait', but only block for MLSEC milliseconds. */
++extern int lll_timed_xwait (void *__ptr, int __lo,
++  int __hi, int __mlsec, int __flags);
++
++/* Same as 'lll_wait', but only block until TSP elapses,
++ * using clock CLK. */
++extern int __lll_abstimed_wait (void *__ptr, int __val,
++  const struct timespec *__tsp, int __flags, int __clk);
++
++/* Same as 'lll_xwait', but only block until TSP elapses,
++ * using clock CLK. */
++extern int __lll_abstimed_xwait (void *__ptr, int __lo, int __hi,
++  const struct timespec *__tsp, int __flags, int __clk);
++
++/* Same as 'lll_lock', but return with an error if TSP elapses,
++ * using clock CLK. */
++extern int __lll_abstimed_lock (void *__ptr,
++  const struct timespec *__tsp, int __flags, int __clk);
++
++/* Acquire the lock at PTR, but return with an error if
++ * the process containing the owner thread dies. */
++extern int lll_robust_lock (void *__ptr, int __flags);
++
++/* Same as 'lll_robust_lock', but only block until TSP
++ * elapses, using clock CLK. */
++extern int __lll_robust_abstimed_lock (void *__ptr,
++  const struct timespec *__tsp, int __flags, int __clk);
++
++/* Same as 'lll_robust_lock', but return with an error
++ * if the lock cannot be acquired without blocking. */
++extern int lll_robust_trylock (void *__ptr);
++
++/* Wake one or more threads waiting on address PTR,
++ * setting its value to VAL before doing so. */
++extern void lll_set_wake (void *__ptr, int __val, int __flags);
++
++/* Release the robust lock at PTR. */
++extern void lll_robust_unlock (void *__ptr, int __flags);
++
++/* Rearrange threads waiting on address SRC to instead wait on
++ * DST, waking one of them if WAIT_ONE is non-zero. */
++extern void lll_requeue (void *__src, void *__dst,
++  int __wake_one, int __flags);
++
++/* The following are hacks that allow us to simulate optional
++ * parameters in C, to avoid having to pass the clock id for
++ * every one of these calls, defaulting to CLOCK_REALTIME if
++ * no argument is passed. */
++
++#define lll_abstimed_wait(ptr, val, tsp, flags, ...)   \
++  ({   \
++     const clockid_t __clk[] = { CLOCK_REALTIME, ##__VA_ARGS__ };   \
++     __lll_abstimed_wait ((ptr), (val), (tsp), (flags),   \
++       __clk[sizeof (__clk) / sizeof (__clk[0]) - 1]);   \
++   })
++
++#define lll_abstimed_xwait(ptr, lo, hi, tsp, flags, ...)   \
++  ({   \
++     const clockid_t __clk[] = { CLOCK_REALTIME, ##__VA_ARGS__ };   \
++     __lll_abstimed_xwait ((ptr), (lo), (hi), (tsp), (flags),   \
++       __clk[sizeof (__clk) / sizeof (__clk[0]) - 1]);   \
++   })
++
++#define lll_abstimed_lock(ptr, tsp, flags, ...)   \
++  ({   \
++     const clockid_t __clk[] = { CLOCK_REALTIME, ##__VA_ARGS__ };   \
++     __lll_abstimed_lock ((ptr), (tsp), (flags),   \
++       __clk[sizeof (__clk) / sizeof (__clk[0]) - 1]);   \
++   })
++
++#define lll_robust_abstimed_lock(ptr, tsp, flags, ...)   \
++  ({   \
++     const clockid_t __clk[] = { CLOCK_REALTIME, ##__VA_ARGS__ };   \
++     __lll_robust_abstimed_lock ((ptr), (tsp), (flags),   \
++       __clk[sizeof (__clk) / sizeof (__clk[0]) - 1]);   \
++   })
++
++#endif
+Index: glibc-2.23/hurd/hurdpid.c
+===================================================================
+--- glibc-2.23.orig/hurd/hurdpid.c
++++ glibc-2.23/hurd/hurdpid.c
+@@ -16,6 +16,8 @@
+    <http://www.gnu.org/licenses/>.  */
+ 
+ #include <hurd.h>
++#include <lowlevellock.h>
++
+ pid_t _hurd_pid, _hurd_ppid, _hurd_pgrp;
+ int _hurd_orphaned;
+ 
+@@ -66,6 +68,7 @@ _S_msg_proc_newids (mach_port_t me,
+ 
+   /* Notify any waiting user threads that the id change as been completed.  */
+   ++_hurd_pids_changed_stamp;
++  lll_wake (&_hurd_pids_changed_stamp, GSYNC_BROADCAST);
+ 
+   return 0;
+ }
+Index: glibc-2.23/hurd/hurdsig.c
+===================================================================
+--- glibc-2.23.orig/hurd/hurdsig.c
++++ glibc-2.23/hurd/hurdsig.c
+@@ -1617,14 +1617,14 @@ reauth_proc (mach_port_t new)
+   __mach_port_destroy (__mach_task_self (), ref);
+ 
+   /* Set the owner of the process here too. */
+-  mutex_lock (&_hurd_id.lock);
++  __mutex_lock (&_hurd_id.lock);
+   if (!_hurd_check_ids ())
+     HURD_PORT_USE (&_hurd_ports[INIT_PORT_PROC],
+ 		   __proc_setowner (port,
+ 				    (_hurd_id.gen.nuids
+ 				     ? _hurd_id.gen.uids[0] : 0),
+ 				    !_hurd_id.gen.nuids));
+-  mutex_unlock (&_hurd_id.lock);
++  __mutex_unlock (&_hurd_id.lock);
+ 
+   (void) &reauth_proc;		/* Silence compiler warning.  */
+ }
+Index: glibc-2.23/hurd/setauth.c
+===================================================================
+--- glibc-2.23.orig/hurd/setauth.c
++++ glibc-2.23/hurd/setauth.c
+@@ -18,14 +18,13 @@
+ #include <hurd.h>
+ #include <hurd/port.h>
+ #include <hurd/id.h>
++#include <hurdlock.h>
+ #include "set-hooks.h"
+ 
+ /* Things in the library which want to be run when the auth port changes.  */
+ DEFINE_HOOK (_hurd_reauth_hook, (auth_t new_auth));
+ 
+-#include <cthreads.h>
+-static struct mutex reauth_lock = MUTEX_INITIALIZER;
+-
++static unsigned int reauth_lock = LLL_INITIALIZER;
+ 
+ /* Set the auth port to NEW, and reauthenticate
+    everything used by the library.  */
+Index: glibc-2.23/hurd/sysvshm.c
+===================================================================
+--- glibc-2.23.orig/hurd/sysvshm.c
++++ glibc-2.23/hurd/sysvshm.c
+@@ -26,6 +26,7 @@
+ #include <dirent.h>
+ #include <sys/stat.h>
+ #include <sys/shm.h>
++#include <hurdlock.h>
+ 
+ 
+ /* Description of an shm attachment.  */
+@@ -45,7 +46,7 @@ struct sysvshm_attach
+ static struct sysvshm_attach *attach_list;
+ 
+ /* A lock to protect the linked list of shared memory attachments.  */
+-static struct mutex sysvshm_lock = MUTEX_INITIALIZER;
++static unsigned int sysvshm_lock = LLL_INITIALIZER;
+ 
+ 
+ /* Adds a segment attachment.  */
+Index: glibc-2.23/mach/Makefile
+===================================================================
+--- glibc-2.23.orig/mach/Makefile
++++ glibc-2.23/mach/Makefile
+@@ -23,7 +23,7 @@ headers = mach_init.h mach.h mach_error.
+ 	  $(interface-headers) mach/mach.h mach/mig_support.h mach/error.h \
+ 	  $(lock-headers) machine-sp.h
+ lock = spin-solid spin-lock mutex-init mutex-solid
+-lock-headers = lock-intern.h machine-lock.h spin-lock.h
++lock-headers = lock-intern.h spin-lock.h
+ routines = $(mach-syscalls) $(mach-shortcuts) \
+ 	   mach_init mig_strncpy msg \
+ 	   mig-alloc mig-dealloc mig-reply \
+Index: glibc-2.23/mach/lock-intern.h
+===================================================================
+--- glibc-2.23.orig/mach/lock-intern.h
++++ glibc-2.23/mach/lock-intern.h
+@@ -19,73 +19,92 @@
+ #define	_LOCK_INTERN_H
+ 
+ #include <sys/cdefs.h>
+-#include <machine-lock.h>
++#if defined __USE_EXTERN_INLINES && defined _LIBC
++#include <lowlevellock.h>
++#endif
+ 
+ #ifndef _EXTERN_INLINE
+ #define _EXTERN_INLINE __extern_inline
+ #endif
+ 
++/* The type of a spin lock variable. */
++typedef unsigned int __spin_lock_t;
++
++/* Static initializer for spinlocks. */
++#define __SPIN_LOCK_INITIALIZER   0
+ 
+ /* Initialize LOCK.  */
+ 
+ void __spin_lock_init (__spin_lock_t *__lock);
+ 
+ #if defined __USE_EXTERN_INLINES && defined _LIBC
+ _EXTERN_INLINE void
+ __spin_lock_init (__spin_lock_t *__lock)
+ {
+-  *__lock = __SPIN_LOCK_INITIALIZER;
++  *__lock = LLL_INITIALIZER;
+ }
+ #endif
+ 
+ 
+-/* Lock LOCK, blocking if we can't get it.  */
+-extern void __spin_lock_solid (__spin_lock_t *__lock);
+-
+ /* Lock the spin lock LOCK.  */
+ 
+ void __spin_lock (__spin_lock_t *__lock);
+ 
+ #if defined __USE_EXTERN_INLINES && defined _LIBC
+ _EXTERN_INLINE void
+ __spin_lock (__spin_lock_t *__lock)
+ {
+-  if (! __spin_try_lock (__lock))
+-    __spin_lock_solid (__lock);
++  lll_lock (__lock, 0);
+ }
+ #endif
+-
+-/* Name space-clean internal interface to mutex locks.
+ 
+-   Code internal to the C library uses these functions to lock and unlock
+-   mutex locks.  These locks are of type `struct mutex', defined in
+-   <cthreads.h>.  The functions here are name space-clean.  If the program
+-   is linked with the cthreads library, `__mutex_lock_solid' and
+-   `__mutex_unlock_solid' will invoke the corresponding cthreads functions
+-   to implement real mutex locks.  If not, simple stub versions just use
+-   spin locks.  */
++/* Unlock LOCK. */
++void __spin_unlock (__spin_lock_t *__lock);
+ 
++#if defined __USE_EXTERN_INLINES && defined _LIBC
++_EXTERN_INLINE void
++__spin_unlock (__spin_lock_t *__lock)
++{
++  lll_unlock (__lock, 0);
++}
++#endif
+ 
+-/* Initialize the newly allocated mutex lock LOCK for further use.  */
+-extern void __mutex_init (void *__lock);
++/* Try to lock LOCK; return nonzero if we locked it, zero if another has. */
++int __spin_try_lock (__spin_lock_t *__lock);
+ 
+-/* Lock LOCK, blocking if we can't get it.  */
+-extern void __mutex_lock_solid (void *__lock);
++#if defined __USE_EXTERN_INLINES && defined _LIBC
++_EXTERN_INLINE int
++__spin_try_lock (__spin_lock_t *__lock)
++{
++  return (lll_trylock (__lock) == 0);
++}
++#endif
++
++/* Return nonzero if LOCK is locked. */
++int __spin_lock_locked (__spin_lock_t *__lock);
+ 
+-/* Finish unlocking LOCK, after the spin lock LOCK->held has already been
+-   unlocked.  This function will wake up any thread waiting on LOCK.  */
+-extern void __mutex_unlock_solid (void *__lock);
++#if defined __USE_EXTERN_INLINES && defined _LIBC
++_EXTERN_INLINE int
++__spin_lock_locked (__spin_lock_t *__lock)
++{
++  return (*(volatile __spin_lock_t *)__lock != 0);
++}
++#endif
++
++/* Name space-clean internal interface to mutex locks. */
++
++/* Initialize the newly allocated mutex lock LOCK for further use.  */
++extern void __mutex_init (void *__lock);
+ 
+ /* Lock the mutex lock LOCK.  */
+ 
+ void __mutex_lock (void *__lock);
+ 
+ #if defined __USE_EXTERN_INLINES && defined _LIBC
+ _EXTERN_INLINE void
+ __mutex_lock (void *__lock)
+ {
+-  if (! __spin_try_lock ((__spin_lock_t *) __lock))
+-    __mutex_lock_solid (__lock);
++  __spin_lock ((__spin_lock_t *)__lock);
+ }
+ #endif
+ 
+@@ -97,19 +116,18 @@ __mutex_lock (void *__lock)
+ _EXTERN_INLINE void
+ __mutex_unlock (void *__lock)
+ {
+-  __spin_unlock ((__spin_lock_t *) __lock);
+-  __mutex_unlock_solid (__lock);
++  __spin_unlock ((__spin_lock_t *)__lock);
+ }
+ #endif
+ 
+ 
+ int __mutex_trylock (void *__lock);
+ 
+ #if defined __USE_EXTERN_INLINES && defined _LIBC
+ _EXTERN_INLINE int
+ __mutex_trylock (void *__lock)
+ {
+-  return __spin_try_lock ((__spin_lock_t *) __lock);
++  return (__spin_try_lock ((__spin_lock_t *)__lock));
+ }
+ #endif
+ 
+Index: glibc-2.23/mach/lowlevellock.h
+===================================================================
+--- /dev/null
++++ glibc-2.23/mach/lowlevellock.h
+@@ -0,0 +1,80 @@
++/* Copyright (C) 1994-2016 Free Software Foundation, Inc.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <http://www.gnu.org/licenses/>.  */
++
++#ifndef __MACH_LOWLEVELLOCK_H__
++#define __MACH_LOWLEVELLOCK_H__   1
++
++#include <mach/gnumach.h>
++#include <atomic.h>
++
++/* Gsync flags. */
++#ifndef GSYNC_SHARED
++  #define GSYNC_SHARED      0x01
++  #define GSYNC_QUAD        0x02
++  #define GSYNC_TIMED       0x04
++  #define GSYNC_BROADCAST   0x08
++  #define GSYNC_MUTATE      0x10
++#endif
++
++/* Static initializer for low-level locks. */
++#define LLL_INITIALIZER   0
++
++/* Wait on address PTR, without blocking if its contents
++ * are different from VAL. */
++#define lll_wait(ptr, val, flags)   \
++  __gsync_wait (__mach_task_self (),   \
++    (vm_offset_t)(ptr), (val), 0, 0, (flags))
++
++/* Wake one or more threads waiting on address PTR. */
++#define lll_wake(ptr, flags)   \
++  __gsync_wake (__mach_task_self (), (vm_offset_t)(ptr), 0, (flags))
++
++/* Acquire the lock at PTR. */
++#define lll_lock(ptr, flags)   \
++  ({   \
++     int *__iptr = (int *)(ptr);   \
++     int __flags = (flags);   \
++     if (*__iptr != 0 ||   \
++         atomic_compare_and_exchange_bool_acq (__iptr, 1, 0) != 0)   \
++       while (1)   \
++         {   \
++           if (atomic_exchange_acq (__iptr, 2) == 0)   \
++             break;   \
++           lll_wait (__iptr, 2, __flags);   \
++         }   \
++     (void)0;   \
++   })
++
++/* Try to acquire the lock at PTR, without blocking.
++ * Evaluates to zero on success. */
++#define lll_trylock(ptr)   \
++  ({   \
++     int *__iptr = (int *)(ptr);   \
++     *__iptr == 0 &&   \
++       atomic_compare_and_exchange_bool_acq (__iptr, 1, 0) == 0 ? 0 : -1;   \
++   })
++
++/* Release the lock at PTR. */
++#define lll_unlock(ptr, flags)   \
++  ({   \
++     int *__iptr = (int *)(ptr);   \
++     if (atomic_exchange_rel (__iptr, 0) == 2)   \
++       lll_wake (__iptr, (flags));   \
++     (void)0;   \
++   })
++
++#endif
+Index: glibc-2.23/mach/mutex-init.c
+===================================================================
+--- glibc-2.23.orig/mach/mutex-init.c
++++ glibc-2.23/mach/mutex-init.c
+@@ -17,13 +17,10 @@
+    <http://www.gnu.org/licenses/>.  */
+ 
+ #include <lock-intern.h>
+-#include <cthreads.h>
++#include <lowlevellock.h>
+ 
+ void
+ __mutex_init (void *lock)
+ {
+-  /* This happens to be name space-safe because it is a macro.
+-     It invokes only spin_lock_init, which is a macro for __spin_lock_init;
+-     and cthread_queue_init, which is a macro for some simple code.  */
+-  mutex_init ((struct mutex *) lock);
++  *(int *)lock = LLL_INITIALIZER;
+ }
+Index: glibc-2.23/sysdeps/mach/Makefile
+===================================================================
+--- glibc-2.23.orig/sysdeps/mach/Makefile
++++ glibc-2.23/sysdeps/mach/Makefile
+@@ -50,4 +50,22 @@ mach-before-compile:
+ before-compile += $(mach-before-compile)
+ endif
+ 
++ifeq (crypt,$(subdir))
++  LDLIBS-crypt.so += $(objdir)/mach/libmachuser.so
++else ifeq (dlfcn,$(subdir))
++  LDLIBS-dl.so += $(objdir)/mach/libmachuser.so
++else ifeq (nis,$(subdir))
++  LDLIBS-nsl.so += $(objdir)/mach/libmachuser.so
++  LDLIBS-nss_nis.so += $(objdir)/mach/libmachuser.so
++  LDLIBS-nss_nisplus.so += $(objdir)/mach/libmachuser.so
++  LDLIBS-nss_compat.so += $(objdir)/mach/libmachuser.so
++else ifeq (nss,$(subdir))
++  LDLIBS-nss.so += $(objdir)/mach/libmachuser.so
++  LDLIBS-nss_files.so += $(objdir)/mach/libmachuser.so
++else ifeq (posix,$(subdir))
++  LDLIBS-tst-rfc3484 += $(objdir)/mach/libmachuser.so
++  LDLIBS-tst-rfc3484-2 += $(objdir)/mach/libmachuser.so
++  LDLIBS-tst-rfc3484-3 += $(objdir)/mach/libmachuser.so
++endif
++
+ endif	# in-Makerules
+Index: glibc-2.23/sysdeps/mach/libc-lock.h
+===================================================================
+--- glibc-2.23.orig/sysdeps/mach/libc-lock.h
++++ glibc-2.23/sysdeps/mach/libc-lock.h
+@@ -20,10 +20,31 @@
+ #define _LIBC_LOCK_H 1
+ 
+ #ifdef _LIBC
++
++#include <tls.h>
+ #include <cthreads.h>
+-#define __libc_lock_t struct mutex
++#include <lowlevellock.h>
++
++/* The locking here is very inexpensive, even for inlining. */
++#define _IO_lock_inexpensive   1
++
++typedef unsigned int __libc_lock_t;
++typedef struct
++{
++  __libc_lock_t lock;
++  int cnt;
++  void *owner;
++} __libc_lock_recursive_t;
++
++typedef __libc_lock_recursive_t __rtld_lock_recursive_t;
++
++extern char __libc_lock_self0[0];
++#define __libc_lock_owner_self()   \
++  (__LIBC_NO_TLS() ? (void *)&__libc_lock_self0 : THREAD_SELF)
++
+ #else
+ typedef struct __libc_lock_opaque__ __libc_lock_t;
++typedef struct __libc_lock_recursive_opaque__ __libc_lock_recursive_t;
+ #endif
+ 
+ /* Type for key of thread specific data.  */
+@@ -40,27 +61,94 @@ typedef cthread_key_t __libc_key_t;
+   CLASS __libc_lock_t NAME;
+ 
+ /* Define an initialized lock variable NAME with storage class CLASS.  */
++#define _LIBC_LOCK_INITIALIZER LLL_INITIALIZER
+ #define __libc_lock_define_initialized(CLASS,NAME) \
+-  CLASS __libc_lock_t NAME = MUTEX_INITIALIZER;
++  CLASS __libc_lock_t NAME = LLL_INITIALIZER;
+ 
+ /* Initialize the named lock variable, leaving it in a consistent, unlocked
+    state.  */
+-#define __libc_lock_init(NAME) __mutex_init (&(NAME))
++#define __libc_lock_init(NAME) (NAME) = LLL_INITIALIZER
+ 
+ /* Finalize the named lock variable, which must be locked.  It cannot be
+    used again until __libc_lock_init is called again on it.  This must be
+    called on a lock variable before the containing storage is reused.  */
+-#define __libc_lock_fini(NAME) __mutex_unlock (&(NAME))
++#define __libc_lock_fini             __libc_lock_unlock
++#define __libc_lock_fini_recursive   __libc_lock_unlock_recursive
++#define __rtld_lock_fini_recursive   __rtld_lock_unlock_recursive
+ 
+ /* Lock the named lock variable.  */
+-#define __libc_lock_lock(NAME) __mutex_lock (&(NAME))
++#define __libc_lock_lock(NAME)   \
++  ({ lll_lock (&(NAME), 0); 0; })
+ 
+ /* Lock the named lock variable.  */
+-#define __libc_lock_trylock(NAME) (!__mutex_trylock (&(NAME)))
++#define __libc_lock_trylock(NAME) lll_trylock (&(NAME))
+ 
+ /* Unlock the named lock variable.  */
+-#define __libc_lock_unlock(NAME) __mutex_unlock (&(NAME))
++#define __libc_lock_unlock(NAME)   \
++  ({ lll_unlock (&(NAME), 0); 0; })
++
++#define __libc_lock_define_recursive(CLASS,NAME) \
++  CLASS __libc_lock_recursive_t NAME;
++
++#define _LIBC_LOCK_RECURSIVE_INITIALIZER { LLL_INITIALIZER, 0, 0 }
+ 
++#define __libc_lock_define_initialized_recursive(CLASS,NAME) \
++  CLASS __libc_lock_recursive_t NAME = _LIBC_LOCK_RECURSIVE_INITIALIZER;
++
++#define __rtld_lock_define_recursive(CLASS,NAME) \
++  __libc_lock_define_recursive (CLASS, NAME)
++#define _RTLD_LOCK_RECURSIVE_INITIALIZER \
++  _LIBC_LOCK_RECURSIVE_INITIALIZER
++#define __rtld_lock_define_initialized_recursive(CLASS,NAME) \
++  __libc_lock_define_initialized_recursive (CLASS, NAME)
++
++#define __libc_lock_init_recursive(NAME)   \
++  ((NAME) = (__libc_lock_recursive_t)_LIBC_LOCK_RECURSIVE_INITIALIZER, 0)
++
++#define __libc_lock_trylock_recursive(NAME)   \
++  ({   \
++     __libc_lock_recursive_t *const __lock = &(NAME);   \
++     void *__self = __libc_lock_owner_self ();   \
++     int __r = 0;   \
++     if (__self == __lock->owner)   \
++       ++__lock->cnt;   \
++     else if ((__r = lll_trylock (&__lock->lock)) == 0)   \
++       __lock->owner = __self, __lock->cnt = 1;   \
++     __r;   \
++   })
++
++#define __libc_lock_lock_recursive(NAME)   \
++  ({   \
++     __libc_lock_recursive_t *const __lock = &(NAME);   \
++     void *__self = __libc_lock_owner_self ();   \
++     if (__self != __lock->owner)   \
++       {   \
++         lll_lock (&__lock->lock, 0);   \
++         __lock->owner = __self;   \
++       }   \
++     ++__lock->cnt;   \
++     (void)0;   \
++   })
++
++#define __libc_lock_unlock_recursive(NAME)   \
++  ({   \
++     __libc_lock_recursive_t *const __lock = &(NAME);   \
++     if (--__lock->cnt == 0)   \
++       {   \
++         __lock->owner = 0;   \
++         lll_unlock (&__lock->lock, 0);   \
++       }   \
++   })
++
++
++#define __rtld_lock_initialize(NAME) \
++  (void) ((NAME) = (__rtld_lock_recursive_t) _RTLD_LOCK_RECURSIVE_INITIALIZER)
++#define __rtld_lock_trylock_recursive(NAME) \
++  __libc_lock_trylock_recursive (NAME)
++#define __rtld_lock_lock_recursive(NAME) \
++  __libc_lock_lock_recursive(NAME)
++#define __rtld_lock_unlock_recursive(NAME) \
++  __libc_lock_unlock_recursive (NAME)
+ 
+ /* XXX for now */
+ #define __libc_rwlock_define		__libc_lock_define
+@@ -73,25 +161,38 @@ typedef cthread_key_t __libc_key_t;
+ #define __libc_rwlock_trywrlock		__libc_lock_trylock
+ #define __libc_rwlock_unlock		__libc_lock_unlock
+ 
++struct __libc_cleanup_frame
++{
++  void (*__fct) (void *);
++  void *__argp;
++  int __doit;
++};
++
++__extern_inline void
++__libc_cleanup_fct (struct __libc_cleanup_frame *framep)
++{
++  if (framep->__doit)
++    framep->__fct (framep->__argp);
++}
+ 
+ /* Start a critical region with a cleanup function */
+-#define __libc_cleanup_region_start(DOIT, FCT, ARG)			    \
+-{									    \
+-  typeof (***(FCT)) *__save_FCT = (DOIT) ? (FCT) : 0;			    \
+-  typeof (ARG) __save_ARG = ARG;					    \
+-  /* close brace is in __libc_cleanup_region_end below. */
+-
+-/* End a critical region started with __libc_cleanup_region_start. */
+-#define __libc_cleanup_region_end(DOIT)					    \
+-  if ((DOIT) && __save_FCT != 0)					    \
+-    (*__save_FCT)(__save_ARG);						    \
+-}
++#define __libc_cleanup_region_start(DOIT, FCT, ARG)   \
++  do   \
++    {   \
++      struct __libc_cleanup_frame __cleanup   \
++        __attribute__ ((__cleanup__ (__libc_cleanup_fct))) =   \
++        { .__fct = (FCT), .__argp = (ARG), .__doit = (DOIT) };
++
++/* This one closes the brace above. */
++#define __libc_cleanup_region_end(DOIT)   \
++      __cleanup.__doit = (DOIT);   \
++    }   \
++  while (0)
+ 
+-/* Sometimes we have to exit the block in the middle.  */
+-#define __libc_cleanup_end(DOIT)					    \
+-  if ((DOIT) && __save_FCT != 0)					    \
+-    (*__save_FCT)(__save_ARG);						    \
++#define __libc_cleanup_end(DOIT)   __cleanup.__doit = (DOIT);
+ 
++#define __libc_cleanup_push(fct, arg) __libc_cleanup_region_start (1, fct, arg)
++#define __libc_cleanup_pop(execute) __libc_cleanup_region_end (execute)
+ 
+ /* Use mutexes as once control variables. */
+ 
+@@ -102,8 +203,7 @@ struct __libc_once
+   };
+ 
+ #define __libc_once_define(CLASS,NAME) \
+-  CLASS struct __libc_once NAME = { MUTEX_INITIALIZER, 0 }
+-
++  CLASS struct __libc_once NAME = { _LIBC_LOCK_INITIALIZER, 0 }
+ 
+ /* Call handler iff the first call.  */
+ #define __libc_once(ONCE_CONTROL, INIT_FUNCTION) \
+@@ -121,25 +221,15 @@ struct __libc_once
+ #ifdef _LIBC
+ /* We need portable names for some functions.  E.g., when they are
+    used as argument to __libc_cleanup_region_start.  */
+-#define __libc_mutex_unlock __mutex_unlock
+-#endif
++#define __libc_mutex_unlock __libc_lock_unlock
+ 
+ #define __libc_key_create(KEY,DEST) cthread_keycreate (KEY)
+ #define __libc_setspecific(KEY,VAL) cthread_setspecific (KEY, VAL)
+ void *__libc_getspecific (__libc_key_t key);
+ 
+-/* XXX until cthreads supports recursive locks */
+-#define __libc_lock_define_initialized_recursive __libc_lock_define_initialized
+-#define __libc_lock_init_recursive __libc_lock_init
+-#define __libc_lock_fini_recursive __libc_lock_fini
+-#define __libc_lock_trylock_recursive __libc_lock_trylock
+-#define __libc_lock_unlock_recursive __libc_lock_unlock
+-#define __libc_lock_lock_recursive __libc_lock_lock
+-
+-#define __rtld_lock_define_initialized_recursive __libc_lock_define_initialized
+-#define __rtld_lock_fini_recursive __libc_lock_fini
+-#define __rtld_lock_trylock_recursive __libc_lock_trylock
+-#define __rtld_lock_unlock_recursive __libc_lock_unlock
+-#define __rtld_lock_lock_recursive __libc_lock_lock
++/* Hide the definitions which are only supposed to be used inside libc in
++   a separate file.  This file is not present in the installation!  */
++# include <libc-lockP.h>
++#endif
+ 
+ #endif	/* libc-lock.h */
+Index: glibc-2.23/sysdeps/mach/hurd/bits/errno.h
+===================================================================
+--- glibc-2.23.orig/sysdeps/mach/hurd/bits/errno.h
++++ glibc-2.23/sysdeps/mach/hurd/bits/errno.h
+@@ -224,6 +224,10 @@ enum __error_t_codes
+ #define	ETIME           _HURD_ERRNO (117)/* Timer expired */
+ 	ECANCELED       = _HURD_ERRNO (119),
+ #define	ECANCELED       _HURD_ERRNO (119)/* Operation canceled */
++	EOWNERDEAD      = _HURD_ERRNO (120),
++#define	EOWNERDEAD      _HURD_ERRNO (120)/* Robust mutex owner died */
++	ENOTRECOVERABLE = _HURD_ERRNO (121),
++#define	ENOTRECOVERABLE _HURD_ERRNO (121)/* Robust mutex irrecoverable */
+ 
+ 	/* Errors from <mach/message.h>.  */
+ 	EMACH_SEND_IN_PROGRESS          = 0x10000001,
+@@ -280,6 +284,8 @@ enum __error_t_codes
+ 	EKERN_MEMORY_PRESENT            = 23,
+ 	EKERN_WRITE_PROTECTION_FAILURE  = 24,
+ 	EKERN_TERMINATED                = 26,
++	EKERN_TIMEDOUT                  = 27,
++	EKERN_INTERRUPTED               = 28,
+ 
+ 	/* Errors from <mach/mig_errors.h>.  */
+ 	EMIG_TYPE_ERROR         = -300  /* client type check failure */,
+@@ -307,7 +313,7 @@ enum __error_t_codes
+ 
+ };
+ 
+-#define	_HURD_ERRNOS	120
++#define	_HURD_ERRNOS	122
+ 
+ /* User-visible type of error codes.  It is ok to use `int' or
+    `kern_return_t' for these, but with `error_t' the debugger prints
+Index: glibc-2.23/sysdeps/mach/hurd/libc-lock.h
+===================================================================
+--- glibc-2.23.orig/sysdeps/mach/hurd/libc-lock.h
++++ /dev/null
+@@ -1,219 +0,0 @@
+-/* libc-internal interface for mutex locks.  Hurd version using Mach cthreads.
+-   Copyright (C) 1996-2016 Free Software Foundation, Inc.
+-   This file is part of the GNU C Library.
+-
+-   The GNU C Library is free software; you can redistribute it and/or
+-   modify it under the terms of the GNU Lesser General Public
+-   License as published by the Free Software Foundation; either
+-   version 2.1 of the License, or (at your option) any later version.
+-
+-   The GNU C Library is distributed in the hope that it will be useful,
+-   but WITHOUT ANY WARRANTY; without even the implied warranty of
+-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-   Lesser General Public License for more details.
+-
+-   You should have received a copy of the GNU Lesser General Public
+-   License along with the GNU C Library; if not, see
+-   <http://www.gnu.org/licenses/>.  */
+-
+-#ifndef _LIBC_LOCK_H
+-#define _LIBC_LOCK_H 1
+-
+-#if (_LIBC - 0) || (_CTHREADS_ - 0)
+-#if (_LIBC - 0)
+-#include <tls.h>
+-#endif
+-#include <cthreads.h>
+-
+-/* The locking here is very inexpensive, even for inlining.  */
+-#define _IO_lock_inexpensive  1
+-
+-typedef struct mutex __libc_lock_t;
+-typedef struct
+-{
+-  struct mutex mutex;
+-  void *owner;
+-  int count;
+-} __libc_lock_recursive_t;
+-typedef __libc_lock_recursive_t __rtld_lock_recursive_t;
+-
+-extern char __libc_lock_self0[0];
+-#define __libc_lock_owner_self() (__LIBC_NO_TLS() ? &__libc_lock_self0 : THREAD_SELF)
+-
+-#else
+-typedef struct __libc_lock_opaque__ __libc_lock_t;
+-typedef struct __libc_lock_recursive_opaque__ __libc_lock_recursive_t;
+-#endif
+-
+-/* Define a lock variable NAME with storage class CLASS.  The lock must be
+-   initialized with __libc_lock_init before it can be used (or define it
+-   with __libc_lock_define_initialized, below).  Use `extern' for CLASS to
+-   declare a lock defined in another module.  In public structure
+-   definitions you must use a pointer to the lock structure (i.e., NAME
+-   begins with a `*'), because its storage size will not be known outside
+-   of libc.  */
+-#define __libc_lock_define(CLASS,NAME) \
+-  CLASS __libc_lock_t NAME;
+-
+-/* Define an initialized lock variable NAME with storage class CLASS.  */
+-#define _LIBC_LOCK_INITIALIZER MUTEX_INITIALIZER
+-#define __libc_lock_define_initialized(CLASS,NAME) \
+-  CLASS __libc_lock_t NAME = _LIBC_LOCK_INITIALIZER;
+-
+-/* Initialize the named lock variable, leaving it in a consistent, unlocked
+-   state.  */
+-#define __libc_lock_init(NAME) __mutex_init (&(NAME))
+-
+-/* Finalize the named lock variable, which must be locked.  It cannot be
+-   used again until __libc_lock_init is called again on it.  This must be
+-   called on a lock variable before the containing storage is reused.  */
+-#define __libc_lock_fini(NAME) __mutex_unlock (&(NAME))
+-#define __libc_lock_fini_recursive(NAME) __mutex_unlock (&(NAME).mutex)
+-#define __rtld_lock_fini_recursive(NAME) __mutex_unlock (&(NAME).mutex)
+-
+-
+-/* Lock the named lock variable.  */
+-#define __libc_lock_lock(NAME) __mutex_lock (&(NAME))
+-
+-/* Lock the named lock variable.  */
+-#define __libc_lock_trylock(NAME) (!__mutex_trylock (&(NAME)))
+-
+-/* Unlock the named lock variable.  */
+-#define __libc_lock_unlock(NAME) __mutex_unlock (&(NAME))
+-
+-
+-#define __libc_lock_define_recursive(CLASS,NAME) \
+-  CLASS __libc_lock_recursive_t NAME;
+-#define _LIBC_LOCK_RECURSIVE_INITIALIZER { MUTEX_INITIALIZER, 0, 0 }
+-#define __libc_lock_define_initialized_recursive(CLASS,NAME) \
+-  CLASS __libc_lock_recursive_t NAME = _LIBC_LOCK_RECURSIVE_INITIALIZER;
+-
+-#define __rtld_lock_define_recursive(CLASS,NAME) \
+-  __libc_lock_define_recursive (CLASS, NAME)
+-#define _RTLD_LOCK_RECURSIVE_INITIALIZER \
+-  _LIBC_LOCK_RECURSIVE_INITIALIZER
+-#define __rtld_lock_define_initialized_recursive(CLASS,NAME) \
+-  __libc_lock_define_initialized_recursive (CLASS, NAME)
+-
+-#define __libc_lock_init_recursive(NAME) \
+-  ({ __libc_lock_recursive_t *const __lock = &(NAME); \
+-     __lock->owner = 0; mutex_init (&__lock->mutex); })
+-
+-#define __libc_lock_trylock_recursive(NAME)				      \
+-  ({ __libc_lock_recursive_t *const __lock = &(NAME);			      \
+-     void *__self = __libc_lock_owner_self ();				      \
+-     __mutex_trylock (&__lock->mutex)					      \
+-     ? (__lock->owner = __self, __lock->count = 1, 0)			      \
+-     : __lock->owner == __self ? (++__lock->count, 0) : 1; })
+-
+-#define __libc_lock_lock_recursive(NAME)				      \
+-  ({ __libc_lock_recursive_t *const __lock = &(NAME);			      \
+-     void *__self = __libc_lock_owner_self ();				      \
+-     if (__mutex_trylock (&__lock->mutex)				      \
+-	 || (__lock->owner != __self					      \
+-	     && (__mutex_lock (&__lock->mutex), 1)))			      \
+-       __lock->owner = __self, __lock->count = 1;			      \
+-     else								      \
+-       ++__lock->count;							      \
+-  })
+-#define __libc_lock_unlock_recursive(NAME)				      \
+-  ({ __libc_lock_recursive_t *const __lock = &(NAME);			      \
+-     if (--__lock->count == 0)						      \
+-       {								      \
+-	 __lock->owner = 0;						      \
+-	 __mutex_unlock (&__lock->mutex);				      \
+-       }								      \
+-  })
+-
+-
+-#define __rtld_lock_initialize(NAME) \
+-  (void) ((NAME) = (__rtld_lock_recursive_t) _RTLD_LOCK_RECURSIVE_INITIALIZER)
+-#define __rtld_lock_trylock_recursive(NAME) \
+-  __libc_lock_trylock_recursive (NAME)
+-#define __rtld_lock_lock_recursive(NAME) \
+-  __libc_lock_lock_recursive(NAME)
+-#define __rtld_lock_unlock_recursive(NAME) \
+-  __libc_lock_unlock_recursive (NAME)
+-
+-
+-/* XXX for now */
+-#define __libc_rwlock_define		__libc_lock_define
+-#define __libc_rwlock_define_initialized __libc_lock_define_initialized
+-#define __libc_rwlock_init		__libc_lock_init
+-#define __libc_rwlock_fini		__libc_lock_fini
+-#define __libc_rwlock_rdlock		__libc_lock_lock
+-#define __libc_rwlock_wrlock		__libc_lock_lock
+-#define __libc_rwlock_tryrdlock		__libc_lock_trylock
+-#define __libc_rwlock_trywrlock		__libc_lock_trylock
+-#define __libc_rwlock_unlock		__libc_lock_unlock
+-
+-
+-/* Start a critical region with a cleanup function */
+-#define __libc_cleanup_region_start(DOIT, FCT, ARG)			    \
+-{									    \
+-  typeof (***(FCT)) *__save_FCT = (DOIT) ? (FCT) : 0;			    \
+-  typeof (ARG) __save_ARG = ARG;					    \
+-  /* close brace is in __libc_cleanup_region_end below. */
+-
+-/* End a critical region started with __libc_cleanup_region_start. */
+-#define __libc_cleanup_region_end(DOIT)					    \
+-  if ((DOIT) && __save_FCT != 0)					    \
+-    (*__save_FCT)(__save_ARG);						    \
+-}
+-
+-/* Sometimes we have to exit the block in the middle.  */
+-#define __libc_cleanup_end(DOIT)					    \
+-  if ((DOIT) && __save_FCT != 0)					    \
+-    (*__save_FCT)(__save_ARG);						    \
+-
+-#define __libc_cleanup_push(fct, arg) __libc_cleanup_region_start (1, fct, arg)
+-#define __libc_cleanup_pop(execute) __libc_cleanup_region_end (execute)
+-
+-#if (_CTHREADS_ - 0)
+-
+-/* Use mutexes as once control variables. */
+-
+-struct __libc_once
+-  {
+-    __libc_lock_t lock;
+-    int done;
+-  };
+-
+-#define __libc_once_define(CLASS,NAME) \
+-  CLASS struct __libc_once NAME = { MUTEX_INITIALIZER, 0 }
+-
+-/* Call handler iff the first call.  */
+-#define __libc_once(ONCE_CONTROL, INIT_FUNCTION) \
+-  do {									      \
+-    __libc_lock_lock (ONCE_CONTROL.lock);				      \
+-    if (!ONCE_CONTROL.done)						      \
+-      (INIT_FUNCTION) ();						      \
+-    ONCE_CONTROL.done = 1;						      \
+-    __libc_lock_unlock (ONCE_CONTROL.lock);				      \
+-  } while (0)
+-
+-/* Get once control variable.  */
+-#define __libc_once_get(ONCE_CONTROL)	((ONCE_CONTROL).done != 0)
+-
+-#ifdef _LIBC
+-/* We need portable names for some functions.  E.g., when they are
+-   used as argument to __libc_cleanup_region_start.  */
+-#define __libc_mutex_unlock __mutex_unlock
+-#endif
+-
+-/* Type for key of thread specific data.  */
+-typedef cthread_key_t __libc_key_t;
+-
+-#define __libc_key_create(KEY,DEST) cthread_keycreate (KEY)
+-#define __libc_setspecific(KEY,VAL) cthread_setspecific (KEY, VAL)
+-void *__libc_getspecific (__libc_key_t key);
+-
+-#endif /* _CTHREADS_ */
+-
+-/* Hide the definitions which are only supposed to be used inside libc in
+-   a separate file.  This file is not present in the installation!  */
+-#ifdef _LIBC
+-# include <libc-lockP.h>
+-#endif
+-
+-#endif	/* libc-lock.h */
+Index: glibc-2.23/sysdeps/mach/hurd/malloc-machine.h
+===================================================================
+--- glibc-2.23.orig/sysdeps/mach/hurd/malloc-machine.h
++++ glibc-2.23/sysdeps/mach/hurd/malloc-machine.h
+@@ -22,15 +22,14 @@
+ #ifndef _MALLOC_MACHINE_H
+ #define _MALLOC_MACHINE_H
+ 
+-#include <atomic.h>
+ #include <libc-lock.h>
++#include <mach/lock-intern.h>
+ 
+-/* Assume hurd, with cthreads */
+-
+-/* Cthreads `mutex_t' is a pointer to a mutex, and malloc wants just the
+-   mutex itself.  */
+ #undef mutex_t
+-#define mutex_t struct mutex
++#define mutex_t unsigned int
++
++#undef MUTEX_INITIALIZER
++#define MUTEX_INITIALIZER   LLL_INITIALIZER
+ 
+ #undef mutex_init
+ #define mutex_init(m) ({ __mutex_init(m); 0; })
+Index: glibc-2.23/sysdeps/mach/hurd/setpgid.c
+===================================================================
+--- glibc-2.23.orig/sysdeps/mach/hurd/setpgid.c
++++ glibc-2.23/sysdeps/mach/hurd/setpgid.c
+@@ -19,6 +19,7 @@
+ #include <unistd.h>
+ #include <hurd.h>
+ #include <hurd/port.h>
++#include <lowlevellock.h>
+ 
+ /* Set the process group ID of the process matching PID to PGID.
+    If PID is zero, the current process's process group ID is set.
+@@ -38,14 +39,7 @@ __setpgid (pid_t pid, pid_t pgid)
+     /* Synchronize with the signal thread to make sure we have
+        received and processed proc_newids before returning to the user.  */
+     while (_hurd_pids_changed_stamp == stamp)
+-      {
+-#ifdef noteven
+-	/* XXX we have no need for a mutex, but cthreads demands one.  */
+-	__condition_wait (&_hurd_pids_changed_sync, NULL);
+-#else
+-	__swtch_pri(0);
+-#endif
+-      }
++      lll_wait (&_hurd_pids_changed_stamp, stamp, 0);
+ 
+   return 0;
+ 
+Index: glibc-2.23/sysdeps/mach/hurd/setsid.c
+===================================================================
+--- glibc-2.23.orig/sysdeps/mach/hurd/setsid.c
++++ glibc-2.23/sysdeps/mach/hurd/setsid.c
+@@ -21,6 +21,7 @@
+ #include <hurd/port.h>
+ #include <hurd/fd.h>
+ #include <hurd/ioctl.h>
++#include <lowlevellock.h>
+ 
+ /* Create a new session with the calling process as its leader.
+    The process group IDs of the session and the calling process
+@@ -55,14 +56,7 @@ __setsid (void)
+ 	 returned by `getpgrp ()' in other threads) has been updated before
+ 	 we return.  */
+       while (_hurd_pids_changed_stamp == stamp)
+-	{
+-#ifdef noteven
+-	  /* XXX we have no need for a mutex, but cthreads demands one.  */
+-	  __condition_wait (&_hurd_pids_changed_sync, NULL);
+-#else
+-	  __swtch_pri (0);
+-#endif
+-	}
++        lll_wait (&_hurd_pids_changed_stamp, stamp, 0);
+     }
+ 
+   HURD_CRITICAL_END;
+-- 
+tg: (bde3bfa..) t/gsync-libc (depends on: t/gsync-libc-merge)
