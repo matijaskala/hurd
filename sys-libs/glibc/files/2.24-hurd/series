@@ -1,6 +1,7 @@
 define_pthread_stack_min.diff
 hsearch_r.c.diff
 libpthread.diff
+local-clock_gettime_MONOTONIC.diff
 local-disable-libnss-db.diff
 local-hurdsig-global-dispositions-version.diff
 param.h.diff
