@@ -17,6 +17,7 @@ tg-fcntl-internal.h.diff
 tg-gai_misc.diff
 tg-grantpt.diff
 tg-gscope.diff
+tg-sendmsg-SCM_RIGHTS.diff
 tg-sendmsg-SCM_CREDS.diff
 tg-single-select-timeout.diff
 tg-io_select_timeout.diff
