@@ -10,6 +10,7 @@ null.diff
 revert-96a15749.diff
 #shm-directory.diff
 submitted-add-needed.diff
+submitted-net.diff
 tg-_dl_random.diff
 tg-faccessat.diff
 tg-extern_inline.diff
