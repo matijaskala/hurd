@@ -10,6 +10,7 @@ null.diff
 revert-96a15749.diff
 #shm-directory.diff
 submitted-add-needed.diff
+submitted-hurd-abilist.diff
 submitted-net.diff
 tg-_dl_random.diff
 tg-faccessat.diff
@@ -36,6 +37,7 @@ tg-hurdsig-fixes.diff
 tg-hurdsig-global-dispositions.diff
 tg-hurdsig-SA_SIGINFO.diff
 tg-libpthread_depends.diff
+tg-unlockpt-chroot.diff
 tg-verify.h.diff
 unsubmitted-gnumach.defs.diff
 tg-libpthread-gsync-mutex.diff
