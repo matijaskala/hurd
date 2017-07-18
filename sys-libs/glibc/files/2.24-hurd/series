@@ -37,6 +37,9 @@ tg-hurdsig-fixes.diff
 tg-hurdsig-global-dispositions.diff
 tg-hurdsig-SA_SIGINFO.diff
 tg-libpthread_depends.diff
+tg-pie-sbrk.diff
+tg-pipe2.diff
+tg-socketpair_flags.diff
 tg-unlockpt-chroot.diff
 tg-verify.h.diff
 unsubmitted-gnumach.defs.diff
