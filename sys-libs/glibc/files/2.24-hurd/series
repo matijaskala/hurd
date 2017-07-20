@@ -3,6 +3,7 @@ hsearch_r.c.diff
 libpthread.diff
 local-clock_gettime_MONOTONIC.diff
 local-disable-libnss-db.diff
+local-enable-ldconfig.diff
 local-hurdsig-global-dispositions-version.diff
 param.h.diff
 errno.diff
