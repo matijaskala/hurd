@@ -3,7 +3,7 @@
 
 EAPI=5
 
-inherit git-r3
+inherit autotools git-r3
 
 DESCRIPTION="GNU Mach microkernel headers"
 HOMEPAGE="https://www.gnu.org/software/hurd/microkernel/mach/gnumach.html"
@@ -13,14 +13,15 @@ LICENSE="GPL-2"
 SLOT="0"
 KEYWORDS=""
 IUSE=""
-RESTRICT="mirror"
 
 DEPEND=""
 RDEPEND=""
 
-S=${WORKDIR}/gnumach-${PV}
-
 : ${CTARGET:=${CHOST/x86_64/i686}}
+
+src_prepare() {
+	eautoreconf
+}
 
 src_configure() {
 	[[ ${CATEGORY} == cross-* ]] && CTARGET=${CATEGORY#cross-}

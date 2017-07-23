@@ -13,12 +13,9 @@ LICENSE="GPL-2"
 SLOT="0"
 KEYWORDS=""
 IUSE=""
-RESTRICT="mirror"
 
 DEPEND=""
 RDEPEND=""
-
-S=${WORKDIR}/hurd-${PV}
 
 src_configure() { :; }
 
