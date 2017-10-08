@@ -1,0 +1,45 @@
+diff -u a/MAKEDEV b/MAKEDEV
+--- a/MAKEDEV	2017-08-19 17:19:12.777992699 +0200
++++ b/MAKEDEV	2017-08-19 17:28:11.155981713 +0200
+@@ -82,6 +82,24 @@
+   fi
+ }
+ 
++st_mknod() {
++  local NODE="$1"
++  local OWNER="$2"
++  local PERM="$3"
++  local N1="$4"
++  local N2="$5"
++  shift 5
++  if [ "$KEEP" ] && showtrans "$NODE" > /dev/null 2>&1 ; then
++    return;
++  fi
++  rm -f "$NODE"
++  if cmd mknod "$NODE" c "$N1" "$N2"; then
++    cmd chown "$OWNER" "$NODE"
++    cmd chmod "$PERM" "$NODE"
++    cmd settrans $STFLAGS "$NODE" "$@"
++  fi
++}
++
+ lose() {
+   local line
+   for line; do
+@@ -111,12 +128,14 @@
+ 	   ${DEVDIR}/vcs/`echo $I | sed -e s/tty//`/console;;
+       lpr[0-9])
+         st $I root 660 /hurd/streamio "$I";;
++      random)
++	st $I root 644 /hurd/random --seed-file /var/lib/random-seed;;
+       urandom)
+ 	st $I root 644 /hurd/random --fast --seed-file /var/lib/random-seed;;
+       null)
+-	st $I root 666 /hurd/null;;
++	st_mknod $I root 666 1 3 /hurd/null;;
+       full)
+-	st $I root 666 /hurd/null --full;;
++	st_mknod $I root 666 1 7 /hurd/null --full;;
+       zero)
+ 	st $I root 666 /bin/nullauth -- /hurd/storeio -Tzero;;
+       tty)

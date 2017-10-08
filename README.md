@@ -7,9 +7,9 @@ mv /usr/portage/sys-libs/glibc{,-orig} && cp -r sys-libs/glibc /usr/portage/sys-
 
 mkdir /usr/portage/cross-i686-gnu /usr/local/include/hurd
 
-ln -s /usr/sys-microkernel/{{gnumach,hurd}-headers,mig} /usr/portage/cross-i686-gnu
+ln -s /usr/sys-microkernel/{gnu-headers,mig} /usr/portage/cross-i686-gnu
 
-emerge cross-i686-gnu/{gnumach,hurd}-headers
+emerge cross-i686-gnu/gnu-headers
 
 ln -s /usr/i686-gnu/include/mach /usr/local/include
 
