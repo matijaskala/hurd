@@ -5,7 +5,7 @@ EAPI=6
 
 PYTHON_COMPAT=( python2_7 python3_{4,5,6} )
 
-inherit ltprune toolchain-funcs libtool flag-o-matic bash-completion-r1 \
+inherit toolchain-funcs libtool flag-o-matic bash-completion-r1 \
 	pam python-single-r1 multilib-minimal systemd
 
 MY_PV="${PV/_/-}"
@@ -49,13 +49,14 @@ RDEPEND+="
 		!sys-apps/coreutils[kill]
 		!sys-process/procps[kill]
 	)
+	!net-wireless/rfkill
 	!sys-process/schedutils
 	!sys-apps/setarch
 	!<sys-apps/sysvinit-2.88-r7
 	!sys-block/eject
 	!<sys-libs/e2fsprogs-libs-1.41.8
 	!<sys-fs/e2fsprogs-1.41.8
-	!<app-shells/bash-completion-2.3-r2"
+	!<app-shells/bash-completion-2.7-r1"
 
 REQUIRED_USE="python? ( ${PYTHON_REQUIRED_USE} )"
 
@@ -106,7 +107,6 @@ multilib_src_configure() {
 		--disable-chfn-chsh
 		--disable-login
 		--disable-nologin
-		--disable-reset
 		--disable-su
 		--docdir='${datarootdir}'/doc/${PF}
 		--enable-agetty
@@ -116,6 +116,7 @@ multilib_src_configure() {
 		$(use_enable kernel_linux partx)
 		$(use_enable kernel_linux raw)
 		--enable-rename
+		--enable-rfkill
 		--enable-schedutils$([[ ${KERNEL} == hurd ]] && echo =check)
 		--with-bashcompletiondir="$(get_bashcompdir)"
 		--with-systemdsystemunitdir=$(multilib_native_usex systemd "$(systemd_get_systemunitdir)" "no")
@@ -181,7 +182,7 @@ multilib_src_install_all() {
 	dodoc AUTHORS NEWS README* Documentation/{TODO,*.txt,releases/*}
 
 	# e2fsprogs-libs didnt install .la files, and .pc work fine
-	prune_libtool_files
+	find "${ED}" -name "*.la" -delete || die
 
 	if use pam; then
 		newpamd "${FILESDIR}/runuser.pamd" runuser
