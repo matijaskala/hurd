@@ -1,7 +1,7 @@
-# Copyright 1999-2017 Gentoo Foundation
+# Copyright 1999-2020 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
-EAPI=5
+EAPI=7
 
 DESCRIPTION="GNU Mach microkernel headers"
 HOMEPAGE="https://www.gnu.org/software/hurd/microkernel/mach/gnumach.html"
@@ -13,9 +13,6 @@ KEYWORDS="~amd64 ~x86"
 IUSE=""
 RESTRICT="mirror"
 
-DEPEND=""
-RDEPEND=""
-
 S=${WORKDIR}/gnumach-${PV}
 
 : ${CTARGET:=${CHOST/x86_64/i686}}
@@ -23,7 +20,8 @@ S=${WORKDIR}/gnumach-${PV}
 src_configure() {
 	[[ ${CATEGORY} == cross-* ]] && CTARGET=${CATEGORY#cross-}
 	./configure \
-		--prefix= \
+		--prefix=/usr \
+		--exec-prefix= \
 		--host=${CTARGET} || die
 }
 

@@ -1,9 +1,7 @@
-# Copyright 1999-2017 Gentoo Foundation
+# Copyright 1999-2020 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
-EAPI=5
-
-inherit eutils
+EAPI=7
 
 DESCRIPTION="GNU Hurd"
 HOMEPAGE="https://www.gnu.org/software/hurd/"
@@ -17,7 +15,7 @@ RESTRICT="mirror"
 
 COMMON_DEPEND="
 	bzip2? ( app-arch/bzip2[static-libs(+)] )
-	ncurses? ( sys-libs/ncurses[static-libs] )
+	ncurses? ( sys-libs/ncurses:=[static-libs] )
 	parted? ( sys-apps/util-linux[static-libs(+)] sys-block/parted[static-libs(+)] )
 	zlib? ( sys-libs/zlib[static-libs(+)] )"
 DEPEND="${COMMON_DEPEND}"
@@ -25,7 +23,7 @@ RDEPEND="${COMMON_DEPEND}
 	app-shells/bash"
 
 src_prepare() {
-	epatch "${FILESDIR}"/lhurduser.diff
+	eapply "${FILESDIR}"/lhurduser.diff
 }
 
 src_configure() {
