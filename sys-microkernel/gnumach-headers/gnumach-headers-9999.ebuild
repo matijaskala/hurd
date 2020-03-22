@@ -26,7 +26,8 @@ src_prepare() {
 src_configure() {
 	[[ ${CATEGORY} == cross-* ]] && CTARGET=${CATEGORY#cross-}
 	./configure \
-		--prefix= \
+		--prefix=/usr \
+		--exec-prefix= \
 		--host=${CTARGET} || die
 }
 
@@ -39,5 +40,5 @@ src_install() {
 		ddir=
 	fi
 	emake install-data DESTDIR="${ED}"${ddir}
-	rm "${ED}"${ddir}/share/info/dir || die
+	rm "${D}"${ddir}${EPREFIX}/usr/share/info/dir || die
 }

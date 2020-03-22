@@ -3,7 +3,7 @@
 
 EAPI=5
 
-inherit git-r3
+inherit autotools git-r3
 
 DESCRIPTION="GNU Mach microkernel"
 HOMEPAGE="https://www.gnu.org/software/hurd/microkernel/mach/gnumach.html"
@@ -20,11 +20,16 @@ RDEPEND=""
 
 : ${CTARGET:=${CHOST/x86_64/i686}}
 
+src_prepare() {
+	eautoreconf
+}
+
 src_configure() {
 	[[ ${CATEGORY} == cross-* ]] && CTARGET=${CATEGORY#cross-}
 	unset LDFLAGS
 	./configure \
-		--prefix= \
+		--prefix=/usr \
+		--exec-prefix= \
 		--host=${CTARGET} || die
 }
 
@@ -40,5 +45,5 @@ src_install() {
 	fi
 	dodir ${ddir}/boot
 	insinto ${ddir}/boot
-	doins gnumach.gz
+	emake install-exec DESTDIR="${ED}"
 }
