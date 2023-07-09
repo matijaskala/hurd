@@ -1,14 +1,14 @@
-# Copyright 1999-2017 Gentoo Foundation
+# Copyright 1999-2023 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
 
-EAPI=6
+EAPI=8
 
-MACH=gnumach-1.8+git20170911
-HURD=hurd-0.9.git20170910
+MACH=gnumach-1.8+git20230526
+HURD=hurd-0.9.git20230520
 
 DESCRIPTION="GNU system headers"
 HOMEPAGE="https://www.gnu.org/software/hurd/"
-SRC_URI="mirror://debian/pool/main/${MACH:0:1}/${MACH%%-*}/${MACH/-/_}.orig.tar.bz2
+SRC_URI="mirror://debian/pool/main/${MACH:0:1}/${MACH%%-*}/${MACH/-/_}.orig.tar.xz
 	mirror://debian/pool/main/${HURD:0:1}/${HURD%%-*}/${HURD/-/_}.orig.tar.bz2"
 
 LICENSE="GPL-2"
@@ -32,7 +32,7 @@ src_configure() {
 		./configure "$@"
 	}
 	cd "${MACH}" && config \
-		--prefix= \
+		--prefix=/usr \
 		--host=${CTARGET} || die
 }
 
@@ -47,9 +47,9 @@ src_install() {
 	fi
 
 	emake -C "${MACH}" install-data DESTDIR="${ED}"${ddir}
-	rm -f "${ED}"${ddir}/share/info/dir
+	rm -f "${ED}"${ddir}/usr/share/info/dir
 
 	emake -C "${HURD}" install-headers \
 		INSTALL_DATA="/bin/sh \"${WORKDIR}/${HURD}/install-sh\" -c -C -m 644" \
-		includedir="${ED}"${ddir}/include infodir=/some/path
+		includedir="${ED}"${ddir}/usr/include infodir=/some/path
 }
