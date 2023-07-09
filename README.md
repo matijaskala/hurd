@@ -1,23 +1,17 @@
 These are the steps to cross-compile hurd:
 
 ```
-cp eclass/toolchain-glibc.eclass /usr/portage/eclass/toolchain-glibc.eclass # copy glibc-hurd eclass (don't worry, it's compatible with linux)
-
-mv /usr/portage/sys-libs/glibc{,-orig} && cp -r sys-libs/glibc /usr/portage/sys-libs/glibc # use glibc from this overlay
-
 mkdir /usr/portage/cross-i686-gnu /usr/local/include/hurd
 
 ln -s /usr/sys-microkernel/{gnu-headers,mig} /usr/portage/cross-i686-gnu
 
 emerge cross-i686-gnu/gnu-headers
 
-ln -s /usr/i686-gnu/include/mach /usr/local/include
+ln -s /usr/i686-gnu/usr/include/mach /usr/local/include
 
 emerge -O sys-microkernel/mig
 
 ln -s /usr/i686-gnu/include/hurd/version.h /usr/local/include/hurd
-
-ln -s . /usr/i686-gnu/usr
 
 crossdev -t i686-gnu # cross-glibc fails
 
