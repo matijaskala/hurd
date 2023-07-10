@@ -1,19 +1,22 @@
-# Copyright 1999-2020 Gentoo Authors
+# Copyright 1999-2023 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
-EAPI=7
+EAPI=8
 
-inherit git-r3
+inherit autotools
+
+HURD=${P/_p/.git}
 
 DESCRIPTION="GNU Hurd"
 HOMEPAGE="https://www.gnu.org/software/hurd/"
-EGIT_REPO_URI="https://git.savannah.gnu.org/git/hurd/${PN}.git"
+SRC_URI="mirror://debian/pool/main/${PN:0:1}/${PN}/${HURD/-/_}.orig.tar.bz2"
 
 LICENSE="GPL-2"
 SLOT="0"
-KEYWORDS=""
+KEYWORDS="~x86"
 IUSE="bzip2 ncurses parted zlib"
 RESTRICT="mirror"
+S=${WORKDIR}/${HURD}
 
 COMMON_DEPEND="
 	dev-libs/libgcrypt:=[static-libs(-)]
@@ -27,6 +30,9 @@ RDEPEND="${COMMON_DEPEND}
 
 src_prepare() {
 	eapply "${FILESDIR}"/lhurduser.diff
+	eapply "${FILESDIR}"/MAKEDEV_null.diff
+	default
+	eautoreconf
 }
 
 src_configure() {
@@ -59,10 +65,6 @@ src_install() {
 	fi
 	local output_format=$($(tc-getCC) "${flags[@]}" 2>&1 | sed -n 's/^OUTPUT_FORMAT("\([^"]*\)",.*/\1/p')
 	[[ -n ${output_format} ]] && output_format="OUTPUT_FORMAT ( ${output_format} )"
-	for i in "${ED}"/lib/*.a ; do
-		i=${i#${ED}/lib}
-	done
-
 	for i in "${ED}"/lib/*.so ; do
 		local lib=${i#${ED}/lib}
 		cat > "${ED}"/usr/lib/${lib} <<-END_LDSCRIPT
@@ -80,5 +82,12 @@ GROUP ( /lib/$(readlink "${i}") )
 END_LDSCRIPT
 		rm ${i} || die
 		fperms a+x /usr/lib/${lib} || die "could not change perms on ${lib}"
+	done
+
+	for i in login ps uptime vmstat w ; do
+		rm "${ED}"/bin/${i} || die
+	done
+	for i in fsck halt reboot ; do
+		rm "${ED}"/sbin/${i} || die
 	done
 }
