@@ -1,27 +1,20 @@
-# Copyright 1999-2020 Gentoo Authors
+# Copyright 1999-2023 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=7
 
-inherit autotools git-r3
-
 DESCRIPTION="GNU Mach microkernel"
 HOMEPAGE="https://www.gnu.org/software/hurd/microkernel/mach/gnumach.html"
-EGIT_REPO_URI="git://git.savannah.gnu.org/hurd/${PN}.git"
+SRC_URI="mirror://debian/pool/main/${PN:0:1}/${PN}/${PN}_${PV/_p/+git}.orig.tar.xz"
 
 LICENSE="GPL-2"
 SLOT="0"
 KEYWORDS=""
 IUSE=""
 RESTRICT="mirror"
+S=${WORKDIR}/${P/_p/+git}
 
 BDEPEND="sys-microkernel/mig"
-
-: ${CTARGET:=${CHOST/x86_64/i686}}
-
-src_prepare() {
-	eautoreconf
-}
 
 src_configure() {
 	[[ ${CATEGORY} == cross-* ]] && CTARGET=${CATEGORY#cross-}
@@ -44,5 +37,5 @@ src_install() {
 	fi
 	dodir ${ddir}/boot
 	insinto ${ddir}/boot
-	emake install-exec DESTDIR="${ED}"
+	doins gnumach.gz
 }
