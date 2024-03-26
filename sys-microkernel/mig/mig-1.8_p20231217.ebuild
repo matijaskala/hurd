@@ -18,10 +18,15 @@ S=${WORKDIR}/${MIG}
 
 DEPEND="${CATEGORY}/gnu-headers"
 RDEPEND="${CATEGORY}/gnu-headers"
+BDEPEND="sys-devel/bison"
 
 if [[ ${CTARGET:-${CHOST}} == ${CHOST} && ${CATEGORY} == cross-* ]] ; then
 	export CTARGET=${CATEGORY#cross-}
 fi
+
+pkg_setup() {
+	export YACC="bison -y"
+}
 
 src_install() {
 	default
