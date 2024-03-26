@@ -1,10 +1,10 @@
-# Copyright 1999-2023 Gentoo Foundation
+# Copyright 1999-2024 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
 
-MACH=gnumach-1.8+git20230526
-HURD=hurd-0.9.git20230520
+MACH=gnumach-1.8+git${PV}17
+HURD=hurd-0.9.git${PV}17
 
 DESCRIPTION="GNU system headers"
 HOMEPAGE="https://www.gnu.org/software/hurd/"
@@ -22,8 +22,6 @@ S=${WORKDIR}
 export CTARGET=${CTARGET:-${CHOST}}
 if [[ ${CTARGET} == ${CHOST} ]] && [[ ${CATEGORY} == cross-* ]] ; then
 	export CTARGET=${CATEGORY#cross-}
-else
-	export CTARGET=${CTARGET/x86_64/i686}
 fi
 
 src_configure() {
