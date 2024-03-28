@@ -1,7 +1,9 @@
-# Copyright 1999-2023 Gentoo Authors
+# Copyright 1999-2024 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
-EAPI=7
+EAPI=8
+
+inherit crossdev
 
 DESCRIPTION="GNU Mach microkernel"
 HOMEPAGE="https://www.gnu.org/software/hurd/microkernel/mach/gnumach.html"
@@ -14,11 +16,7 @@ IUSE=""
 RESTRICT="mirror"
 S=${WORKDIR}/${P/_p/+git}
 
-BDEPEND="sys-microkernel/mig"
-
 src_configure() {
-	[[ ${CATEGORY} == cross-* ]] && CTARGET=${CATEGORY#cross-}
-	unset LDFLAGS
 	./configure \
 		--prefix=/usr \
 		--exec-prefix= \
