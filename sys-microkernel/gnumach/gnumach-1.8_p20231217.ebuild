@@ -9,7 +9,7 @@ SRC_URI="mirror://debian/pool/main/${PN:0:1}/${PN}/${PN}_${PV/_p/+git}.orig.tar.
 
 LICENSE="GPL-2"
 SLOT="0"
-KEYWORDS=""
+KEYWORDS="~amd64 ~x86"
 IUSE=""
 RESTRICT="mirror"
 S=${WORKDIR}/${P/_p/+git}

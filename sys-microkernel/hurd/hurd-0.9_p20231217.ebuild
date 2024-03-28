@@ -13,7 +13,7 @@ SRC_URI="mirror://debian/pool/main/${PN:0:1}/${PN}/${HURD/-/_}.orig.tar.bz2"
 
 LICENSE="GPL-2"
 SLOT="0"
-KEYWORDS="~x86"
+KEYWORDS="~amd64 ~x86"
 IUSE="bzip2 ncurses parted zlib"
 RESTRICT="mirror"
 S=${WORKDIR}/${HURD}
