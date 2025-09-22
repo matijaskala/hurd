@@ -1,10 +1,10 @@
-# Copyright 1999-2024 Gentoo Foundation
+# Copyright 1999-2025 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
 
-MACH=gnumach-1.8+git${PV}17
-HURD=hurd-0.9.git${PV}17
+MACH=gnumach-1.8+git20250731
+HURD=hurd-0.9.git${PV}01
 
 DESCRIPTION="GNU system headers"
 HOMEPAGE="https://www.gnu.org/software/hurd/"
