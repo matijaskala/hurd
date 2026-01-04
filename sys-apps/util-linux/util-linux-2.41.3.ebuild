@@ -1,15 +1,19 @@
-# Copyright 1999-2024 Gentoo Authors
+# Copyright 1999-2025 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{10..12} )
+PYTHON_COMPAT=( python3_{11..14} )
+TMPFILES_OPTIONAL=1
 
 inherit toolchain-funcs libtool flag-o-matic bash-completion-r1 \
-	pam python-r1 multilib-minimal multiprocessing systemd
+	pam python-r1 multilib-minimal multiprocessing systemd tmpfiles
 
 MY_PV="${PV/_/-}"
 MY_P="${PN}-${MY_PV}"
+
+DESCRIPTION="Various useful Linux utilities"
+HOMEPAGE="https://www.kernel.org/pub/linux/utils/util-linux/ https://github.com/util-linux/util-linux"
 
 if [[ ${PV} == 9999 ]] ; then
 	EGIT_REPO_URI="https://git.kernel.org/pub/scm/utils/util-linux/util-linux.git"
@@ -19,7 +23,7 @@ else
 	inherit verify-sig
 
 	if [[ ${PV} != *_rc* ]] ; then
-		KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~ia64 ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~amd64-linux ~x86-linux ~arm64-macos"
+		KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~arm64-macos"
 	fi
 
 	SRC_URI="https://www.kernel.org/pub/linux/utils/util-linux/v${PV:0:4}/${MY_P}.tar.xz"
@@ -28,12 +32,9 @@ fi
 
 S="${WORKDIR}/${MY_P}"
 
-DESCRIPTION="Various useful Linux utilities"
-HOMEPAGE="https://www.kernel.org/pub/linux/utils/util-linux/ https://github.com/util-linux/util-linux"
-
 LICENSE="GPL-2 GPL-3 LGPL-2.1 BSD-4 MIT public-domain"
 SLOT="0"
-IUSE="audit build caps +cramfs cryptsetup fdformat +hardlink kill +logger magic ncurses nls pam python +readline rtas selinux slang static-libs +su +suid systemd test tty-helpers udev unicode kernel_linux"
+IUSE="audit build caps +cramfs cryptsetup fdformat +hardlink kill +logger magic ncurses nls pam python +readline rtas selinux slang static-libs +su +suid systemd test tty-helpers udev unicode uuidd"
 
 # Most lib deps here are related to programs rather than our libs,
 # so we rarely need to specify ${MULTILIB_USEDEP}.
@@ -41,7 +42,7 @@ RDEPEND="
 	virtual/libcrypt:=
 	audit? ( >=sys-process/audit-2.6:= )
 	caps? ( sys-libs/libcap-ng )
-	cramfs? ( sys-libs/zlib:= )
+	cramfs? ( virtual/zlib:= )
 	cryptsetup? ( >=sys-fs/cryptsetup-2.1.0 )
 	hardlink? ( dev-libs/libpcre2:= )
 	ncurses? (
@@ -84,6 +85,10 @@ RDEPEND+="
 		!<sys-apps/shadow-4.7-r2
 		!>=sys-apps/shadow-4.7-r2[su]
 	)
+	uuidd? (
+		acct-user/uuidd
+		systemd? ( virtual/tmpfiles )
+	)
 	!net-wireless/rfkill
 "
 
@@ -96,12 +101,6 @@ fi
 
 REQUIRED_USE="python? ( ${PYTHON_REQUIRED_USE} ) su? ( pam )"
 RESTRICT="!test? ( test )"
-
-PATCHES=(
-	"${FILESDIR}"/${PN}-2.39.2-fincore-test.patch
-	"${FILESDIR}"/${PN}-2.39.2-backport-pr2251.patch
-	"${FILESDIR}"/${PN}-2.39.2-backport-1d4456d.patch
-)
 
 pkg_pretend() {
 	if use su && ! use suid ; then
@@ -116,22 +115,15 @@ src_unpack() {
 		return
 	fi
 
-	if use verify-sig ; then
-		mkdir "${T}"/verify-sig || die
-		pushd "${T}"/verify-sig &>/dev/null || die
-
-		# Upstream sign the decompressed .tar
-		# Let's do it separately in ${T} then cleanup to avoid external
-		# effects on normal unpack.
-		cp "${DISTDIR}"/${MY_P}.tar.xz . || die
-		xz -d ${MY_P}.tar.xz || die
-		verify-sig_verify_detached ${MY_P}.tar "${DISTDIR}"/${MY_P}.tar.sign
-
-		popd &>/dev/null || die
-		rm -r "${T}"/verify-sig || die
+	# Upstream sign the decompressed .tar
+	if use verify-sig; then
+		einfo "Unpacking ${MY_P}.tar.xz ..."
+		verify-sig_verify_detached - "${DISTDIR}"/${MY_P}.tar.sign \
+			< <(xz -cd "${DISTDIR}"/${MY_P}.tar.xz | tee >(tar -xf -))
+		assert "Unpack failed"
+	else
+		default
 	fi
-
-	default
 }
 
 src_prepare() {
@@ -139,20 +131,60 @@ src_prepare() {
 
 	if use test ; then
 		# Known-failing tests
-		# TODO: investigate these
 		local known_failing_tests=(
 			# Subtest 'options-maximum-size-8192' fails
 			hardlink/options
 
 			# Fails in sandbox
+			# re ioctl_ns: https://github.com/util-linux/util-linux/issues/2967
 			lsns/ioctl_ns
-
+			lsfd/mkfds-inotify
 			lsfd/mkfds-symlink
 			lsfd/mkfds-rw-character-device
 			# Fails with network-sandbox at least in nspawn
 			lsfd/option-inet
 			utmp/last-ipv6
+
+			# Fails with permission errors in nspawn
+			fadvise/drop
+			fincore/count
+
+			# Flaky
+			rename/subdir
+
+			# Permission issues on /dev/random
+			lsfd/mkfds-eventpoll
+			lsfd/column-xmode
+
+			# Hangs on some machines
+			script/replay
 		)
+
+		# debug prints confuse the tests which look for a diff
+		# in output
+		if has_version "=app-shells/bash-5.3_alpha*" ; then
+			known_failing_tests+=(
+				lsfd/column-ainodeclass
+				lsfd/mkfds-netlink-protocol
+				lsfd/column-type
+				lsfd/mkfds-eventfd
+				lsfd/mkfds-signalfd
+				lsfd/mkfds-mqueue
+				lsfd/mkfds-tcp6
+				lsfd/mkfds-tcp
+				lsfd/filter-floating-point-nums
+				lsfd/mkfds-unix-stream-requiring-sockdiag
+				lsfd/mkfds-unix-dgram
+				lsfd/mkfds-directory
+				lsfd/mkfds-pty
+				lsfd/mkfds-pipe-no-fork
+				lsfd/mkfds-unix-stream
+				lsfd/mkfds-ro-regular-file
+				lsfd/mkfds-timerfd
+				lsfd/mkfds-udp
+				lsfd/mkfds-udp6
+			)
+		fi
 
 		local known_failing_test
 		for known_failing_test in "${known_failing_tests[@]}" ; do
@@ -211,10 +243,6 @@ multilib_src_configure() {
 		--localstatedir="${EPREFIX}/var"
 		--runstatedir="${EPREFIX}/run"
 		--enable-fs-paths-extra="${EPREFIX}/usr/sbin:${EPREFIX}/bin:${EPREFIX}/usr/bin"
-
-		# Temporary workaround until ~2.39.2. 2.39.x introduced a big rewrite.
-		# https://github.com/util-linux/util-linux/issues/2287#issuecomment-1576640373
-		--disable-libmount-mountfd-support
 	)
 
 	local myeconfargs=(
@@ -236,6 +264,15 @@ multilib_src_configure() {
 		$(use_enable static-libs static)
 		$(use_with ncurses tinfo)
 		$(use_with selinux)
+		$(multilib_native_use_enable uuidd)
+
+		# TODO: Wire this up (bug #931118)
+		--without-econf
+
+		# TODO: Wire this up (bug #931297)
+		# TODO: investigate build failure w/ 2.40.1_rc1
+		--disable-liblastlog2
+		--disable-pam-lastlog2
 	)
 
 	if use build ; then
@@ -267,6 +304,7 @@ multilib_src_configure() {
 			$(use_enable kernel_linux rfkill)
 			$(use_enable kernel_linux schedutils)
 			--with-systemdsystemunitdir="$(systemd_get_systemunitdir)"
+			--with-tmpfilesdir="${EPREFIX}"/usr/lib/tmpfiles.d
 			$(use_enable caps setpriv)
 			$(use_enable cramfs)
 			$(use_enable fdformat)
@@ -300,6 +338,9 @@ multilib_src_configure() {
 			--enable-libsmartcols
 			--enable-libfdisk
 			--enable-libmount
+
+			# Support uuidd for non-native libuuid
+			$(use_enable uuidd libuuid-force-uuidd)
 		)
 	fi
 
@@ -312,6 +353,12 @@ multilib_src_configure() {
 
 src_configure() {
 	append-lfs-flags
+
+	# Workaround for bug #961040 (gcc PR120006)
+	if tc-is-gcc && [[ $(gcc-major-version) == 15 && $(gcc-minor-version) -lt 2 ]] ; then
+		append-flags -fno-ipa-pta
+	fi
+
 	multilib-minimal_src_configure
 }
 
@@ -355,7 +402,8 @@ multilib_src_install() {
 	fi
 
 	# This needs to be called AFTER python_install call, bug #689190
-	emake DESTDIR="${D}" install
+	# XXX: -j1 as temporary workaround for bug #931301
+	emake DESTDIR="${D}" install -j1
 }
 
 multilib_src_install_all() {
@@ -384,6 +432,10 @@ multilib_src_install_all() {
 		fperms u+s /bin/su
 	fi
 
+	if use uuidd; then
+		newinitd "${FILESDIR}/uuidd.initd" uuidd
+	fi
+
 	# Note:
 	# Bash completion for "runuser" command is provided by same file which
 	# would also provide bash completion for "su" command. However, we don't
@@ -407,5 +459,9 @@ pkg_postinst() {
 	if [[ -z ${REPLACING_VERSIONS} ]] ; then
 		elog "The agetty util now clears the terminal by default. You"
 		elog "might want to add --noclear to your /etc/inittab lines."
+	fi
+
+	if use systemd && use uuidd; then
+		tmpfiles_process uuidd-tmpfiles.conf
 	fi
 }
