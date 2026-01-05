@@ -1,9 +1,5 @@
 These are the steps to cross-compile hurd:
 
-First emerge sys-devel/crossdev from this overlay.
-
-Then
-
-    emerge cross-i686-gnu/gnu-headers
+    emerge sys-devel/crossdev::hurd
     crossdev -t i686-gnu
     i686-gnu-emerge hurd

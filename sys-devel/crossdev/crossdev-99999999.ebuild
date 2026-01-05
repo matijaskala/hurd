@@ -30,7 +30,10 @@ RDEPEND="
 "
 BDEPEND="app-arch/xz-utils"
 
-PATCHES=( "${FILESDIR}/mig.patch" )
+PATCHES=(
+	"${FILESDIR}/gnu-headers.patch"
+	"${FILESDIR}/mig.patch"
+)
 
 src_install() {
 	tc-export PKG_CONFIG # Bug 955822

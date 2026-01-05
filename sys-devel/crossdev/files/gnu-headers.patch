@@ -1,0 +1,15 @@
+--- a/crossdev
++++ b/crossdev
+@@ -1844,6 +1844,12 @@
+ 
+ if ! ex_fast ; then
+ 
++	if [[ ${CTARGET} == i?86-gnu || ${CTARGET} == x86_64-gnu ]] ; then
++		USE="${KUSE} ${USE}" \
++		CROSSCOMPILE_OPTS="" \
++			doemerge gnu-headers
++	fi
++
+ 	# stage 0: binutils
+ 	if [[ "${LLVM}" == "yes" ]] ; then
+ 		if ! portageq has_version / "llvm-core/llvm" ; then
