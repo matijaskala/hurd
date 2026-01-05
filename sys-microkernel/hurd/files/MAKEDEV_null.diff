@@ -26,13 +26,13 @@
    local line
    for line; do
 @@ -111,9 +128,9 @@
-       urandom)
- 	st $I root 644 /hurd/random --fast --seed-file /var/lib/random-seed;;
+ 	# link for compatibility with Linux.
+ 	cmd ln -f -s random $I;;
        null)
--	st $I root 666 /hurd/null;;
+-	st $I root 666 c /hurd/null;;
 +	st_mknod $I root 666 1 3 /hurd/null;;
        full)
--	st $I root 666 /hurd/null --full;;
+-	st $I root 666 c /hurd/null --full;;
 +	st_mknod $I root 666 1 7 /hurd/null --full;;
        zero)
  	st $I root 666 /bin/nullauth -- /hurd/storeio -Tzero;;
