@@ -1,0 +1,21 @@
+--- a/crossdev
++++ b/crossdev
+@@ -1921,9 +1921,15 @@
+ 	if is_s2 ; then
+ 		set_eopts_on_pkg_status ${KPKG} crosscompile_opts_headers-only headers-only
+ 
+-		USE="${KUSE} ${USE}" \
+-		CROSSCOMPILE_OPTS="" \
+-			doemerge ${KPKG}
++		if [[ ${CTARGET} == i?86-gnu || ${CTARGET} == x86_64-gnu ]] ; then
++			USE="${KUSE} ${USE}" \
++			CROSSCOMPILE_OPTS="" \
++				doemerge mig
++		else
++			USE="${KUSE} ${USE}" \
++			CROSSCOMPILE_OPTS="" \
++				doemerge ${KPKG}
++		fi
+ 	fi
+ 
+ 	# stage3: full C library (headers/libs/etc...)
