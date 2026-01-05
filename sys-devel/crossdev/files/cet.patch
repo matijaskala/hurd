@@ -1,0 +1,14 @@
+--- a/crossdev
++++ b/crossdev
+@@ -566,6 +566,11 @@
+ 	# Configure the cet USE flag to match the profiles. We especially
+ 	# don't want to enable it on i?86.
+ 	case ${CTARGET} in
++		x86_64-gnu)
++			BMASK+=" cet"
++			GMASK+=" cet"
++			LMASK+=" cet"
++			;;
+ 		x86_64-*)
+ 			BFORCE+=" cet"
+ 			GUSE+=" cet"

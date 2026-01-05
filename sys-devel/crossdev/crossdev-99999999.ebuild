@@ -31,6 +31,7 @@ RDEPEND="
 BDEPEND="app-arch/xz-utils"
 
 PATCHES=(
+	"${FILESDIR}/cet.patch"
 	"${FILESDIR}/gnu-headers.patch"
 	"${FILESDIR}/mig.patch"
 )
